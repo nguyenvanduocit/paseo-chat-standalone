@@ -24,7 +24,7 @@ import { chatProvider, chatProviderId, hostProjects, openChatTab as openTab } fr
 import { tasteStore, tastePaths } from "./server/taste";
 import { personaStore } from "./server/persona";
 import { selfTools } from "./server/self";
-import { attributeSessions, type AgentOwner } from "./server/session-owners";
+import { sessionLedger, type AgentSession } from "./server/session-owners";
 import { workerStore } from "./server/workers";
 import { replyWatcher } from "./server/replies";
 import { signalTools } from "./server/signal-tools";
@@ -46,10 +46,9 @@ const chatHomeOf = (handle: string) => join(homedir(), "Chat", handle);
 const assistantDirOf = (handle: string) => join(chatRoot, handle, "assistant");
 // The persona is a directory of its own, which is also the workspace the AI Assistant's tabs open in.
 const personaDirOf = (handle: string) => join(chatRoot, handle, "persona");
-// Each person's Claude Code sessions, for the daily improvement (server/work-history.ts): the SessionStart hook records a
-// session's agent under `sessions-pending/`, and this plugin moves it under its owner (server/session-owners.ts).
+// Each person's Claude Code sessions, for the daily improvement (server/work-history.ts): this plugin records each Claude
+// agent's session under the agent's owner (server/session-owners.ts).
 const sessionUsageDir = join(homedir(), ".paseo", "session-usage");
-const sessionsPendingDir = join(chatRoot, "sessions-pending");
 
 export default function contribute(server: PluginServerContext) {
   // The client reads these preferences (toasts, pop-ups), shared by everyone on this daemon.
@@ -126,10 +125,6 @@ export default function contribute(server: PluginServerContext) {
     const owner = await ownerOf(self, workspaces, id => snapshotOf(paseo, id));
     if (!owner) throw new Error(noOwner);
     return chatOf(owner);
-  }
-  async function ownerOfAgent(paseo: PaseoApi, id: string): Promise<AgentOwner> {
-    const [self, { workspaces }] = await Promise.all([snapshotOf(paseo, id), daemon.read()]);
-    return self ? { found: true, owner: await ownerOf(self, workspaces, parent => snapshotOf(paseo, parent)) } : { found: false };
   }
   // The open agents of this daemon that act for `handle`.
   async function agentsOf(paseo: PaseoApi, handle: string): Promise<HostAgent[]> {
@@ -272,21 +267,38 @@ export default function contribute(server: PluginServerContext) {
         .catch(error => console.error(`[chat] Could not report working agents (${person.handle}).`, error)),
     ]);
   }
-  let attributing = false;
-  async function attributeOnce(paseo: PaseoApi) {
-    if (attributing) return;
-    attributing = true;
+  // The Claude agents' sessions, each under the person its agent acts for; an agent with no owner yet waits.
+  const sessions = sessionLedger({ usageDir: sessionUsageDir, transcriptsDir: join(homedir(), ".claude", "projects") });
+  async function agentSessions(paseo: PaseoApi): Promise<AgentSession[]> {
+    const [{ entries }, { workspaces }] = await Promise.all([
+      paseo.agents.list({ filter: { includeArchived: true }, sort: [{ key: "updated_at", direction: "desc" }], page: { limit: 200 } }),
+      daemon.read(),
+    ]);
+    const agents = entries.map(entry => entry.agent);
+    const byId = new Map(agents.map(agent => [agent.id, ownedAgent(agent)]));
+    const found = await Promise.all(agents.map(async (agent): Promise<AgentSession | null> => {
+      const sessionId = agent.persistence?.provider === "claude" ? agent.persistence.sessionId : null;
+      if (!sessionId) return null;
+      const owner = await ownerOf(byId.get(agent.id)!, workspaces, async id => byId.get(id) ?? await snapshotOf(paseo, id));
+      return owner ? { agentId: agent.id, sessionId, cwd: agent.cwd, createdAt: agent.createdAt, owner } : null;
+    }));
+    return found.filter(session => session !== null);
+  }
+  let recording = false;
+  async function recordSessions(paseo: PaseoApi) {
+    if (recording) return;
+    recording = true;
     try {
-      await attributeSessions({ pendingDir: sessionsPendingDir, usageDir: sessionUsageDir, ownerOfAgent: id => ownerOfAgent(paseo, id), log: console.error });
+      await sessions.record(await agentSessions(paseo), new Date().toISOString());
     } catch (error) {
-      console.error("[chat] Could not attribute Claude Code sessions.", error);
+      console.error("[chat] Could not record Claude Code sessions.", error);
     } finally {
-      attributing = false;
+      recording = false;
     }
   }
   const timer = setInterval(() => {
     for (const person of people.values()) void person.then(made => tickPerson(hostPaseo, made), () => {});
-    if (hostPaseo) void attributeOnce(hostPaseo);
+    if (hostPaseo) void recordSessions(hostPaseo);
   }, tickMs);
   timer.unref?.();
 

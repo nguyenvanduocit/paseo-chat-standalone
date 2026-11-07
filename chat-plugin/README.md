@@ -423,9 +423,9 @@ context; it is created in the assistant's workspace only when there is none.
     right after your assistant answered is marked as your reaction to it.
   - `work.md`: what you typed and chose in your own Claude Code sessions, newest first, each with
     what the AI had just said or asked: your prompts and your answers to its questions with options.
-    Your sessions are the ones recorded under `~/.paseo/session-usage/<handle>/`: the SessionStart hook
-    (`hooks/session-start.mts`) records the agent a session runs under, and the plugin files it under that
-    agent's owner ([`docs/standalone.md`](../docs/standalone.md)); another handle's are never read. Left out: tool
+    Your sessions are the ones recorded under `~/.paseo/session-usage/<handle>/`: the plugin records the
+    Claude session each agent runs on under that agent's owner
+    ([`docs/standalone.md`](../docs/standalone.md)); another handle's are never read. Left out: tool
     results, other agents' messages, background task notices, scheduled runs, resumed sessions'
     copied history and summaries, skill text, dispatches another agent wrote (`GOAL:`), chat messages
     a plugin delivered, and every session of the assistant's own tabs. Up to 300 KB.

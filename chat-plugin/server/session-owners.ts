@@ -1,65 +1,98 @@
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { sessionRecordSchema } from "./work-turns";
+import { sessionRecordSchema, type SessionRecord } from "./work-turns";
 
-// Whose each Claude Code session is (docs/standalone.md). The SessionStart hook (hooks/session-start.mts) records the
-// Paseo agent a session runs under in `<pending>/<sessionId>.json`; this moves the record to
-// `<usage>/<owner>/<sessionId>.json`, where the daily improvement reads the owner's sessions (server/work-history.ts).
-// The owner is the agent's, decided as for chat (server/daemon.ts `ownerOf`).
+// Whose each Claude Code session is (docs/standalone.md). Paseo keeps the Claude session an agent runs on
+// (`persistence.sessionId`), and the agent's owner is decided as for chat (server/daemon.ts `ownerOf`), so this records
+// `<usage>/<owner>/<sessionId>.json` for each, where the daily improvement reads the owner's sessions
+// (server/work-history.ts). A record is written once and never replaced.
 
-// What is known of an agent's owner: the agent is gone, or it is there and acts for `owner` (null: no one yet).
-export type AgentOwner = { found: false } | { found: true; owner: string | null };
-
-export interface SessionOwnersInput {
-  pendingDir: string;
-  usageDir: string;
-  ownerOfAgent: (agentId: string) => Promise<AgentOwner>;
-  log: (message: string) => void;
+// A Claude agent of this daemon with the session it runs on now and the person it acts for.
+export interface AgentSession {
+  agentId: string;
+  sessionId: string;
+  cwd: string;
+  createdAt: string;
+  owner: string;
 }
 
-// One pass over the pending records. A record whose agent has no owner yet stays until its workspace is claimed; one
-// whose agent is gone is dropped, since nothing can tell its owner any more.
-export async function attributeSessions({ pendingDir, usageDir, ownerOfAgent, log }: SessionOwnersInput): Promise<void> {
-  let names: string[];
+// The record of a session first seen now. An agent's first session counts from the agent's creation; a later one
+// (resumed, forked, cleared) starts with a copy of the history before it, so it counts from when it is seen
+// (server/work-turns.ts drops a copied session's lines older than `startedAt`).
+export function sessionRecordOf(session: AgentSession, transcriptPath: string, agentHasEarlier: boolean, now: string): SessionRecord {
+  return {
+    sessionId: session.sessionId,
+    transcriptPath,
+    cwd: session.cwd,
+    source: agentHasEarlier ? "resume" : "fork",
+    startedAt: agentHasEarlier ? now : session.createdAt,
+    agentIds: [session.agentId],
+  };
+}
+
+const exists = (path: string) => stat(path).then(() => true, () => false);
+
+async function entries(dir: string): Promise<string[]> {
   try {
-    names = await readdir(pendingDir);
+    return await readdir(dir);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  for (const name of names.filter(name => name.endsWith(".json") && !name.startsWith("."))) {
-    const path = join(pendingDir, name);
-    let text: string;
-    try {
-      text = await readFile(path, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw error;
-    }
-    let raw: unknown;
-    try {
-      raw = JSON.parse(text);
-    } catch {
-      continue; // The hook is still writing it.
-    }
-    const parsed = sessionRecordSchema.safeParse(raw);
-    const agentId = parsed.success ? parsed.data.agentIds[0] : undefined;
-    if (!parsed.success || agentId === undefined) {
-      log(`[chat] Dropped session record ${name}: not one the SessionStart hook writes.`);
-      await rm(path, { force: true });
-      continue;
-    }
-    const agent = await ownerOfAgent(agentId);
-    if (agent.found && agent.owner === null) continue;
-    if (agent.found && agent.owner !== null) {
-      const dir = join(usageDir, agent.owner);
-      await mkdir(dir, { recursive: true });
-      try {
-        await writeFile(join(dir, name), JSON.stringify(parsed.data), { flag: "wx" });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+}
+
+export function sessionLedger({ usageDir, transcriptsDir }: { usageDir: string; transcriptsDir: string }) {
+  // Agent id to the sessions recorded for it, read from the records once and kept up to date after.
+  let known: Promise<Map<string, Set<string>>> | null = null;
+  async function load() {
+    const byAgent = new Map<string, Set<string>>();
+    for (const handle of await entries(usageDir)) {
+      for (const name of (await entries(join(usageDir, handle))).filter(name => name.endsWith(".json"))) {
+        let record: SessionRecord;
+        try {
+          const parsed = sessionRecordSchema.safeParse(JSON.parse(await readFile(join(usageDir, handle, name), "utf8")));
+          if (!parsed.success) continue;
+          record = parsed.data;
+        } catch {
+          continue;
+        }
+        for (const agentId of record.agentIds) byAgent.set(agentId, (byAgent.get(agentId) ?? new Set()).add(record.sessionId));
       }
     }
-    await rm(path, { force: true });
+    return byAgent;
   }
+
+  // Claude Code keeps a session's transcript at `<projects>/<cwd with every other character a dash>/<id>.jsonl`; a
+  // transcript elsewhere under `<projects>` is found by looking. Null until Claude Code has written it.
+  async function transcriptOf(session: AgentSession): Promise<string | null> {
+    const name = `${session.sessionId}.jsonl`;
+    const likely = join(transcriptsDir, session.cwd.replace(/[^A-Za-z0-9]/g, "-"), name);
+    if (await exists(likely)) return likely;
+    for (const dir of await entries(transcriptsDir)) {
+      if (await exists(join(transcriptsDir, dir, name))) return join(transcriptsDir, dir, name);
+    }
+    return null;
+  }
+
+  return {
+    // Records each session not recorded yet whose transcript exists.
+    async record(sessions: readonly AgentSession[], now: string): Promise<void> {
+      known ??= load().catch(error => { known = null; throw error; });
+      const byAgent = await known;
+      for (const session of sessions) {
+        const recorded = byAgent.get(session.agentId) ?? new Set<string>();
+        if (recorded.has(session.sessionId)) continue;
+        const transcriptPath = await transcriptOf(session);
+        if (transcriptPath === null) continue;
+        const dir = join(usageDir, session.owner);
+        await mkdir(dir, { recursive: true });
+        try {
+          await writeFile(join(dir, `${session.sessionId}.json`), JSON.stringify(sessionRecordOf(session, transcriptPath, recorded.size > 0, now)), { flag: "wx" });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        }
+        byAgent.set(session.agentId, recorded.add(session.sessionId));
+      }
+    },
+  };
 }

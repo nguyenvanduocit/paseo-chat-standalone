@@ -7,8 +7,9 @@ import { sessionRecordSchema, workTurns, type SessionRecord, type WorkCursor, ty
 
 // Reads the person's Claude Code sessions for the daily improvement: the ones they worked in (server/work-turns.ts keeps
 // what they typed) and their AI Assistant's tabs (server/assistant-acts.ts keeps what it did in their name). The
-// SessionStart hook names each session's owner in `<usage>/<handle>/<id>.json`; transcripts are shared by every host, so
-// only sessions in the person's own directory are read, never another handle's. A person has thousands of sessions and
+// plugin records each session under its owner in `<usage>/<handle>/<id>.json` (server/session-owners.ts); transcripts
+// of everyone on the daemon sit side by side, so only sessions in the person's own directory are read, never another
+// handle's. A person has thousands of sessions and
 // gigabytes of transcript, so a run reads what changed since the last corpus and then only as much older history as
 // the corpus has room for.
 
@@ -25,7 +26,7 @@ async function sessionsOf(dir: string): Promise<SessionRecord[]> {
       const parsed = sessionRecordSchema.safeParse(JSON.parse(await readFile(join(dir, name), "utf8")));
       return parsed.success ? parsed.data : null;
     } catch {
-      return null; // A record being written, or one an older hook wrote in another shape.
+      return null; // A record being written.
     }
   }));
   return records.filter(record => record !== null);

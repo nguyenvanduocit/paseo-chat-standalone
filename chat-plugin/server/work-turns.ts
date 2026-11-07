@@ -9,7 +9,7 @@ import { z } from "zod";
 // dispatch format), and chat messages a plugin delivered (`<chat_messages>`,
 // which the chat corpus already has). Only what the person typed or chose is kept.
 
-// One session the person ran, as the SessionStart hook recorded it (`~/.paseo/session-usage/<handle>/<id>.json`).
+// One session the person ran, as server/session-owners.ts recorded it (`~/.paseo/session-usage/<handle>/<id>.json`).
 export const sessionRecordSchema = z.object({
   sessionId: z.string(),
   transcriptPath: z.string(),

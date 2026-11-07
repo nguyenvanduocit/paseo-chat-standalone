@@ -24,7 +24,7 @@ CHAT_BROKER_DATA_DIR="$HOME/.paseo/chat-broker" ./target/release/chat-broker &
 # 3. The Paseo daemon must have the same CHAT_BROKER_KEY in its environment, and CHAT_PEOPLE with
 #    the handles of the people who use it (and CHAT_BROKER_URL if the broker is elsewhere).
 #    export CHAT_PEOPLE=nam,an
-#    Then install the plugin.
+#    Restart the daemon after setting or changing these, then install the plugin.
 cd ../chat-plugin
 npm ci
 paseo plugin install "$PWD"
@@ -33,17 +33,6 @@ paseo plugin install "$PWD"
 Each person opens **Chat** in their client and picks their name. On the mobile app, name the connection to the daemon
 with your handle, so the app knows you after each launch. To let the agents of a workspace message as you, open
 that workspace's Chat panel and choose **Nhận workspace này**.
-
-To let each person's AI Assistant learn from their Claude Code sessions too, add the SessionStart hook to the
-daemon user's `~/.claude/settings.json` (Node 23.6 or newer):
-
-```json
-"hooks": {
-  "SessionStart": [
-    {"matcher": "", "hooks": [{"type": "command", "command": "node /path/to/paseo-chat-standalone/chat-plugin/hooks/session-start.mts", "timeout": 5}]}
-  ]
-}
-```
 
 Optional broker settings: `OPENROUTER_KEY` classifies messages; `GRAFANA_TOKEN` with `GRAFANA_URL` turns on signals.
 
