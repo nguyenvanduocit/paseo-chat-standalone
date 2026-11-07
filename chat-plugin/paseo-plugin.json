@@ -1,0 +1,6 @@
+{
+  "id": "chat",
+  "requirements": {
+    "paseo": ">=0.15.0"
+  }
+}

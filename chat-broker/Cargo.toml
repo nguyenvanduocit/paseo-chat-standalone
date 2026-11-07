@@ -1,0 +1,41 @@
+[package]
+name = "chat-broker"
+version = "1.0.0"
+edition = "2024"
+publish = false
+description = "The only process that reads and writes the chat directory; chat plugins talk to it over HTTP and SSE."
+
+[features]
+# Builds `chat-broker-harness`: the broker wired to a clock a test can move.
+harness = []
+
+[[bin]]
+name = "chat-broker"
+path = "src/main.rs"
+
+[[bin]]
+name = "chat-broker-harness"
+path = "src/bin/chat-broker-harness.rs"
+required-features = ["harness"]
+
+[dependencies]
+bytes = "1.12.1"
+getrandom = "0.4.3"
+hex = "0.4.3"
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+indexmap = { version = "2.14.2", features = ["serde"] }
+parking_lot = "0.13.0"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+# preserve_order: JSON objects keep the field order the broker writes, as the chat files always had.
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha2 = "0.11.1"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync"] }
+unicode-normalization = "0.1.26"
+# rustls with ring and the webpki roots: no OpenSSL, no CA bundle needed in the runtime image.
+ureq = "3.5.1"
+
+[profile.release]
+strip = true
