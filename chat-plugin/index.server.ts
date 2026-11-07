@@ -257,7 +257,12 @@ export default function contribute(server: PluginServerContext) {
   }
   // Everyone sees how many of their agents are working, also while no window is open: an agent starting a turn
   // brings the client too.
-  server.addHook("agent.turn.before", async (_, { paseo }) => { seen(paseo); });
+  // A turn's start is when a resumed session's own lines begin (server/session-owners.ts), kept until the turn ends.
+  const turnStarts = new Map<string, string>();
+  server.addHook("agent.turn.before", async ({ agent }, { paseo }) => {
+    seen(paseo);
+    turnStarts.set(agent.id, new Date().toISOString());
+  });
 
   async function tickPerson(paseo: PaseoApi | null, person: Person) {
     await Promise.all([
@@ -267,38 +272,49 @@ export default function contribute(server: PluginServerContext) {
         .catch(error => console.error(`[chat] Could not report working agents (${person.handle}).`, error)),
     ]);
   }
-  // The Claude agents' sessions, each under the person its agent acts for; an agent with no owner yet waits.
+  // Each Claude agent's session under the person the agent acts for (server/session-owners.ts): recorded when one of its
+  // turns ends, which every session with something in it has, and once for all agents when the plugin first has a
+  // Paseo client. An agent whose workspace has no owner yet is recorded at a turn after someone claims it.
   const sessions = sessionLedger({ usageDir: sessionUsageDir, transcriptsDir: join(homedir(), ".claude", "projects") });
-  async function agentSessions(paseo: PaseoApi): Promise<AgentSession[]> {
-    const [{ entries }, { workspaces }] = await Promise.all([
-      paseo.agents.list({ filter: { includeArchived: true }, sort: [{ key: "updated_at", direction: "desc" }], page: { limit: 200 } }),
-      daemon.read(),
-    ]);
-    const agents = entries.map(entry => entry.agent);
-    const byId = new Map(agents.map(agent => [agent.id, ownedAgent(agent)]));
-    const found = await Promise.all(agents.map(async (agent): Promise<AgentSession | null> => {
-      const sessionId = agent.persistence?.provider === "claude" ? agent.persistence.sessionId : null;
-      if (!sessionId) return null;
-      const owner = await ownerOf(byId.get(agent.id)!, workspaces, async id => byId.get(id) ?? await snapshotOf(paseo, id));
-      return owner ? { agentId: agent.id, sessionId, cwd: agent.cwd, createdAt: agent.createdAt, owner } : null;
-    }));
-    return found.filter(session => session !== null);
+  type AgentSnapshot = Awaited<ReturnType<PaseoApi["agents"]["list"]>>["entries"][number]["agent"];
+  async function sessionOf(agent: AgentSnapshot, workspaces: Readonly<Record<string, string>>, parentOf: (id: string) => Promise<OwnedAgent | null>): Promise<AgentSession | null> {
+    const sessionId = agent.persistence?.provider === "claude" ? agent.persistence.sessionId : null;
+    if (!sessionId) return null;
+    const owner = await ownerOf(ownedAgent(agent), workspaces, parentOf);
+    return owner ? { agentId: agent.id, sessionId, cwd: agent.cwd, createdAt: agent.createdAt, owner } : null;
   }
-  let recording = false;
-  async function recordSessions(paseo: PaseoApi) {
-    if (recording) return;
-    recording = true;
+  server.addHook("agent.turn.after", async ({ agent }, { paseo }) => {
+    seen(paseo);
+    const startedAt = turnStarts.get(agent.id) ?? new Date().toISOString();
+    turnStarts.delete(agent.id);
     try {
-      await sessions.record(await agentSessions(paseo), new Date().toISOString());
+      const [snapshot, { workspaces }] = await Promise.all([paseo.agents.ref(agent.id).refresh(), daemon.read()]);
+      const session = snapshot?.agent ? await sessionOf(snapshot.agent, workspaces, id => snapshotOf(paseo, id)) : null;
+      if (session) await sessions.record([session], startedAt);
     } catch (error) {
-      console.error("[chat] Could not record Claude Code sessions.", error);
-    } finally {
-      recording = false;
+      console.error(`[chat] Could not record the Claude Code session of ${agent.id}.`, error);
     }
+  });
+  async function recordEveryAgent(paseo: PaseoApi) {
+    const agents: AgentSnapshot[] = [];
+    for (let cursor: string | undefined; ;) {
+      const { entries, pageInfo } = await paseo.agents.list({ filter: { includeArchived: true }, page: { limit: 200, cursor } });
+      agents.push(...entries.map(entry => entry.agent));
+      if (!pageInfo.hasMore || !pageInfo.nextCursor) break;
+      cursor = pageInfo.nextCursor;
+    }
+    const { workspaces } = await daemon.read();
+    const byId = new Map(agents.map(agent => [agent.id, ownedAgent(agent)]));
+    const found = await Promise.all(agents.map(agent => sessionOf(agent, workspaces, async id => byId.get(id) ?? null)));
+    await sessions.record(found.filter(session => session !== null), new Date().toISOString());
   }
+  let recordedEveryAgent = false;
   const timer = setInterval(() => {
     for (const person of people.values()) void person.then(made => tickPerson(hostPaseo, made), () => {});
-    if (hostPaseo) void recordSessions(hostPaseo);
+    if (hostPaseo && !recordedEveryAgent) {
+      recordedEveryAgent = true;
+      void recordEveryAgent(hostPaseo).catch(error => console.error("[chat] Could not record the Claude Code sessions of every agent.", error));
+    }
   }, tickMs);
   timer.unref?.();
 

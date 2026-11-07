@@ -16,9 +16,9 @@ export interface AgentSession {
   owner: string;
 }
 
-// The record of a session first seen now. An agent's first session counts from the agent's creation; a later one
-// (resumed, forked, cleared) starts with a copy of the history before it, so it counts from when it is seen
-// (server/work-turns.ts drops a copied session's lines older than `startedAt`).
+// The record of a session first seen in a turn that started `now`. An agent's first session counts from the agent's
+// creation; a later one (resumed, forked, cleared) starts with a copy of the history before it, so it counts from that
+// turn's start (server/work-turns.ts drops a copied session's lines older than `startedAt`).
 export function sessionRecordOf(session: AgentSession, transcriptPath: string, agentHasEarlier: boolean, now: string): SessionRecord {
   return {
     sessionId: session.sessionId,
@@ -44,6 +44,7 @@ async function entries(dir: string): Promise<string[]> {
 export function sessionLedger({ usageDir, transcriptsDir }: { usageDir: string; transcriptsDir: string }) {
   // Agent id to the sessions recorded for it, read from the records once and kept up to date after.
   let known: Promise<Map<string, Set<string>>> | null = null;
+  let writing: Promise<unknown> = Promise.resolve();
   async function load() {
     const byAgent = new Map<string, Set<string>>();
     for (const handle of await entries(usageDir)) {
@@ -74,25 +75,32 @@ export function sessionLedger({ usageDir, transcriptsDir }: { usageDir: string; 
     return null;
   }
 
-  return {
-    // Records each session not recorded yet whose transcript exists.
-    async record(sessions: readonly AgentSession[], now: string): Promise<void> {
-      known ??= load().catch(error => { known = null; throw error; });
-      const byAgent = await known;
-      for (const session of sessions) {
-        const recorded = byAgent.get(session.agentId) ?? new Set<string>();
-        if (recorded.has(session.sessionId)) continue;
-        const transcriptPath = await transcriptOf(session);
-        if (transcriptPath === null) continue;
-        const dir = join(usageDir, session.owner);
-        await mkdir(dir, { recursive: true });
-        try {
-          await writeFile(join(dir, `${session.sessionId}.json`), JSON.stringify(sessionRecordOf(session, transcriptPath, recorded.size > 0, now)), { flag: "wx" });
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        }
-        byAgent.set(session.agentId, recorded.add(session.sessionId));
+  async function recordNow(sessions: readonly AgentSession[], now: string): Promise<void> {
+    known ??= load().catch(error => { known = null; throw error; });
+    const byAgent = await known;
+    for (const session of sessions) {
+      const recorded = byAgent.get(session.agentId) ?? new Set<string>();
+      if (recorded.has(session.sessionId)) continue;
+      const transcriptPath = await transcriptOf(session);
+      if (transcriptPath === null) continue;
+      const dir = join(usageDir, session.owner);
+      await mkdir(dir, { recursive: true });
+      try {
+        await writeFile(join(dir, `${session.sessionId}.json`), JSON.stringify(sessionRecordOf(session, transcriptPath, recorded.size > 0, now)), { flag: "wx" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
+      byAgent.set(session.agentId, recorded.add(session.sessionId));
+    }
+  }
+
+  return {
+    // Records each session not recorded yet whose transcript exists. Calls run one at a time, so a turn ending while
+    // every agent is being recorded cannot decide twice which session of an agent came first.
+    record(sessions: readonly AgentSession[], now: string): Promise<void> {
+      const done = writing.then(() => recordNow(sessions, now));
+      writing = done.catch(() => {});
+      return done;
     },
   };
 }

@@ -21,11 +21,13 @@ One machine runs one Paseo daemon and one chat broker. Several people connect th
   conversation tabs, `chat.assistant-of` on the AI Assistant's tabs), else the owner of its workspace, else its
   parent agent's owner (`paseo.parent-agent-id`). A person claims a workspace no one owns in its Chat panel; only the
   owner lets go of it. An agent with no owner gets an error from the chat tools, never a guess.
-- **Whose a Claude Code session is.** Paseo keeps the Claude session each agent runs on (`persistence.sessionId`). Every
-  tick the plugin records each one it has not yet in `~/.paseo/session-usage/<owner>/<sessionId>.json`, the owner
-  decided as for chat (`server/session-owners.ts`), once its transcript exists; an agent whose workspace has no owner
-  waits. An agent's first session counts from the agent's creation; a later one (resumed, forked) carries a copy of
-  the history before it, so it counts from when the plugin first sees it.
+- **Whose a Claude Code session is.** Paseo keeps the Claude session each agent runs on (`persistence.sessionId`).
+  When an agent's turn ends (`agent.turn.after`), the plugin records its session in
+  `~/.paseo/session-usage/<owner>/<sessionId>.json`, the owner decided as for chat (`server/session-owners.ts`); when
+  the plugin first has a Paseo client, it does the same for every agent, archived ones too. An agent whose workspace has
+  no owner yet is recorded at a turn after someone claims it. An agent's first session counts from the agent's
+  creation; a later one (resumed, forked) carries a copy of the history before it, so it counts from the start of the
+  first turn the plugin sees it in.
 - **Per person on the daemon:** persona and assistant state in `~/.paseo/chat/<handle>/`, direct-message tabs in
   `~/Chat/<handle>`, conversation tabs whose model id and persistence carry the handle (`server/provider.ts`).
 
@@ -61,7 +63,7 @@ preferences are shared by everyone on the daemon.
 - Paseo's composer in a chat tab searches mentions without saying whose tab it is, so it offers every agent of the
   daemon. The Chat panel's and pop-up's reply boxes offer only the sender's own agents.
 - The daily improvement learns only from Claude Code sessions a Paseo agent ran; a `claude` started by hand has no
-  agent to own it. A session an agent left within one tick (5 seconds) is not recorded; what it held is in the next.
+  agent to own it. A later session that began while the plugin was not running counts from when the plugin started.
 - Everyone on the daemon shares one Claude account: its limits and bill.
 - Adding or removing a person is a change to `CHAT_PEOPLE` and a restart of the daemon.
 - On mobile, the host label is the person: renaming the connection changes who you are.

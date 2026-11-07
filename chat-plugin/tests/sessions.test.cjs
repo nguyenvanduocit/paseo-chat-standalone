@@ -37,4 +37,12 @@ test('an agent\'s sessions go to its owner: the first counts from the agent\'s c
   await sessionLedger({ usageDir, transcriptsDir }).record([{ ...agent, sessionId: 's2' }], '2026-11-07T03:00:00.000Z');
   assert.deepEqual([read('nam', 's2').source, read('nam', 's2').startedAt], ['resume', '2026-11-07T03:00:00.000Z']);
   assert.equal(read('nam', 's1').startedAt, agent.createdAt, 'a record is never replaced');
+
+  // A turn ending while every agent is being recorded: one of the two is the agent's first session, not both.
+  const other = { ...agent, agentId: 'agent-2', owner: 'an' };
+  transcript(agent.cwd, 's3');
+  transcript(agent.cwd, 's4');
+  const both = sessionLedger({ usageDir, transcriptsDir });
+  await Promise.all([both.record([{ ...other, sessionId: 's3' }], 'now'), both.record([{ ...other, sessionId: 's4' }], 'now')]);
+  assert.deepEqual([read('an', 's3').source, read('an', 's4').source].sort(), ['fork', 'resume']);
 });
