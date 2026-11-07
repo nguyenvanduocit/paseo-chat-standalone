@@ -6,23 +6,27 @@ import { assistantOfLabel } from "../shared/assistant";
 import { handleSchema } from "../shared/chat";
 import { tabOwnerLabel } from "../shared/chat-tabs";
 
-// One daemon serves several people (docs/standalone.md). Each client picks its person, and every call it makes names
-// them; this file keeps who has picked themselves here, so their AI Assistant runs while no client of theirs is open,
-// and whose each workspace is, so an agent in it acts for that person in chat.
+// One daemon serves several people (docs/standalone.md). Who they are is the daemon's configuration (`CHAT_PEOPLE`);
+// each client picks one of them, and every call it makes names them. This file keeps whose each workspace is, so an
+// agent in it acts for that person in chat.
 
+// The people of this daemon, from `CHAT_PEOPLE` (handles separated by commas). Only they have a chat client and an AI
+// Assistant here, so a mistyped name is refused instead of starting another router.
+export function peopleOf(env: Readonly<Record<string, string | undefined>>): readonly string[] {
+  const listed = (env.CHAT_PEOPLE ?? "").split(",").map(handle => handle.trim()).filter(Boolean);
+  if (listed.length === 0) throw new Error("CHAT_PEOPLE is not set: list this daemon's people, e.g. CHAT_PEOPLE=nam,an.");
+  const invalid = listed.filter(handle => !handleSchema.safeParse(handle).success);
+  if (invalid.length) throw new Error(`CHAT_PEOPLE has handles chat cannot use: ${invalid.join(", ")}.`);
+  return [...new Set(listed)].sort();
+}
 
 const stateSchema = z.object({
-  people: z.array(handleSchema).default([]),
   // Workspace id to the handle of the person who claimed it.
   workspaces: z.record(z.string(), handleSchema).default({}),
 });
 export type DaemonState = z.infer<typeof stateSchema>;
 
-const empty = (): DaemonState => ({ people: [], workspaces: {} });
-
-export function withPerson(state: DaemonState, handle: string): DaemonState {
-  return state.people.includes(handle) ? state : { ...state, people: [...state.people, handle].sort() };
-}
+const empty = (): DaemonState => ({ workspaces: {} });
 
 // A person claims a workspace no one owns, or lets go of their own. Someone else's workspace stays theirs: the
 // owner lets go first, so one person never takes over the agents of another by accident.

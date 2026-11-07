@@ -5,7 +5,8 @@ import type { input as ZodInput, output as ZodOutput, ZodType } from "zod";
 
 // The person at this client (docs/standalone.md). One daemon serves several people, and only the client knows which of
 // them is at it, so the client picks once and names that person in every call (`as`). It is kept in the window's
-// localStorage where there is one (web and desktop), else for as long as the app runs.
+// localStorage where there is one (web and desktop). The mobile app gives plugins no storage that outlives it, so there
+// the person is the one whose handle is the label of the app's connection to this daemon (`hostLabelPerson`).
 
 const storageKey = "paseo-chat.as";
 
@@ -13,15 +14,33 @@ interface KeyValueStorage { getItem(key: string): string | null; setItem(key: st
 const storage = (globalThis as { localStorage?: KeyValueStorage }).localStorage ?? null;
 
 let me: string | null = storage?.getItem(storageKey) ?? null;
+// The host label is read once per run: after "Đổi người" the picker stays, even where the label names someone.
+let labelRead = me !== null;
 const listeners = new Set<() => void>();
 
 export const currentMe = () => me;
 
 export function setMe(handle: string | null) {
   me = handle;
+  labelRead = true;
   if (handle === null) storage?.removeItem(storageKey);
   else storage?.setItem(storageKey, handle);
   for (const listener of listeners) listener();
+}
+
+// The one person of this daemon whose handle a configured host is labelled with; null when none is, or several
+// different ones are, since the plugin cannot tell which host it is connected through.
+export function hostLabelPerson(labels: readonly string[], people: readonly string[]): string | null {
+  const named = new Set(labels.map(label => label.trim()).filter(label => people.includes(label)));
+  return named.size === 1 ? [...named][0] : null;
+}
+
+// Takes the person a host label names, the first time this run asks and no one is picked yet.
+export function adoptHostLabel(labels: readonly string[], people: readonly string[]) {
+  if (labelRead) return;
+  labelRead = true;
+  const person = hostLabelPerson(labels, people);
+  if (person !== null) setMe(person);
 }
 
 export function subscribeMe(listener: () => void): () => void {

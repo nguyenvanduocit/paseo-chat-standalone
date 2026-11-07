@@ -280,18 +280,11 @@ export const sendChatMessage = defineRpc({
   output: z.object({ message: messageViewSchema }),
 });
 
-// The people who picked themselves on a client of this daemon, for the next client to pick from.
+// The people of this daemon (`CHAT_PEOPLE`), for a client to pick from.
 export const readDaemonPeople = defineRpc({
   name: "chat.daemon-people",
   input: z.object({}),
   output: z.object({ people: z.array(z.string()) }),
-});
-
-// A client picked its person: the daemon keeps them, lists them in chat and runs their AI Assistant from now on.
-export const joinDaemon = defineRpc({
-  name: "chat.join",
-  input: personal({}),
-  output: z.object({}),
 });
 
 // Whose a workspace is: the agents in it act for that person in chat. Null while no one has claimed it.

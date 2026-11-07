@@ -1,4 +1,5 @@
-// One daemon, several people (docs/standalone.md): whom an agent acts for, who owns a workspace, whose a chat tab is.
+// One daemon, several people (docs/standalone.md): who they are, whom an agent acts for, who owns a workspace, whose a
+// chat tab is.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const fs = require('node:fs');
@@ -7,15 +8,24 @@ const path = require('node:path');
 const { loadTs } = require('./load-ts.cjs');
 
 const mocks = { '@getpaseo/plugin': { ...require('@getpaseo/plugin'), defineRpc: value => value, defineSettings: value => value } };
-const { daemonStore, ownedAgent, ownerOf, withClaim, withPerson } = loadTs('server/daemon.ts', mocks);
+const { daemonStore, ownedAgent, ownerOf, peopleOf, withClaim } = loadTs('server/daemon.ts', mocks);
+const { hostLabelPerson } = loadTs('client/me.ts', { ...mocks, '@getpaseo/plugin/client': {}, react: {} });
+
+test('the people are the daemon\'s CHAT_PEOPLE; a client on a host labelled with one of them is that person', () => {
+  assert.deepEqual(peopleOf({ CHAT_PEOPLE: ' nam, an,nam ' }), ['an', 'nam']);
+  assert.throws(() => peopleOf({}), /CHAT_PEOPLE is not set/);
+  assert.throws(() => peopleOf({ CHAT_PEOPLE: 'nam,a b' }), /a b/);
+  assert.equal(hostLabelPerson(['Văn phòng', 'nam '], ['an', 'nam']), 'nam');
+  assert.equal(hostLabelPerson(['nam', 'an'], ['an', 'nam']), null, 'two hosts naming two people say nothing');
+  assert.equal(hostLabelPerson(['nma'], ['an', 'nam']), null);
+});
 const { tabOfModel, modelIdOf } = loadTs('server/provider.ts', mocks);
 
 test('an agent acts for its labelled person, else its workspace owner, else its parent\'s; none says, no one; a workspace is claimed only from no one', async () => {
   const store = daemonStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'daemon-')), 'daemon.json'));
-  await store.change(state => withPerson(withPerson(state, 'nam'), 'an'));
   const { workspaces } = await store.change(state => withClaim(state, 'ws-nam', 'nam', true));
   await assert.rejects(store.change(state => withClaim(state, 'ws-nam', 'an', true)), /Workspace này là của nam/);
-  assert.deepEqual(await store.read(), { people: ['an', 'nam'], workspaces: { 'ws-nam': 'nam' } });
+  assert.deepEqual(await store.read(), { workspaces: { 'ws-nam': 'nam' } });
 
   const agents = new Map([
     ['router-an', ownedAgent({ id: 'router-an', workspaceId: 'ws-nam', labels: { 'chat.assistant-of': 'an' } })],

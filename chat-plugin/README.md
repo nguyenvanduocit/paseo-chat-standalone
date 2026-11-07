@@ -4,12 +4,13 @@ A Paseo plugin for chat between the people who share one Paseo daemon, with an A
 
 ## Who you are
 
-One daemon serves several people ([`docs/standalone.md`](../docs/standalone.md)). The first time a client opens
-Chat (the screen, the workspace panel or **Cần lưu ý**) it asks **Bạn là ai?**: pick someone who picked themselves on
-this daemon before, or type a new handle. The client keeps the choice in the window's `localStorage` (web and
-desktop; on mobile, until the app closes) and names that person in every call. **Settings → Workspace Chat → Đổi
-người** picks again. Picking joins the daemon: from then on the person is listed in chat and their AI Assistant runs,
-whether or not a client of theirs is open.
+One daemon serves several people ([`docs/standalone.md`](../docs/standalone.md)): the handles in the daemon's
+`CHAT_PEOPLE`. Each of them is listed in chat and has their AI Assistant running from the plugin's start, whether or
+not a client of theirs is open; any other handle is refused. The first time a client opens Chat (the screen, the
+workspace panel or **Cần lưu ý**) it asks **Bạn là ai?** and names the person picked in every call. Web and desktop
+keep the choice in the window's `localStorage`. The mobile app gives plugins no storage that lasts, so there name the
+app's connection to the daemon with your handle (e.g. `nam`): a client whose host label is one person's handle is that
+person without asking. **Settings → Workspace Chat → Đổi người** picks again.
 
 An agent acts for one person in chat. A tab the plugin opens carries its person's handle (conversation tabs under
 `chat.owner`, the AI Assistant's tabs under `chat.assistant-of`). Any other agent acts for the owner of its workspace,
@@ -422,8 +423,9 @@ context; it is created in the assistant's workspace only when there is none.
     right after your assistant answered is marked as your reaction to it.
   - `work.md`: what you typed and chose in your own Claude Code sessions, newest first, each with
     what the AI had just said or asked: your prompts and your answers to its questions with options.
-    Your sessions are the ones the SessionStart hook recorded under `~/.paseo/session-usage/<handle>/`
-    ([session ownership](../docs/session-usage.md)); another handle's are never read. Left out: tool
+    Your sessions are the ones recorded under `~/.paseo/session-usage/<handle>/`: the SessionStart hook
+    (`hooks/session-start.mts`) records the agent a session runs under, and the plugin files it under that
+    agent's owner ([`docs/standalone.md`](../docs/standalone.md)); another handle's are never read. Left out: tool
     results, other agents' messages, background task notices, scheduled runs, resumed sessions'
     copied history and summaries, skill text, dispatches another agent wrote (`GOAL:`), chat messages
     a plugin delivered, and every session of the assistant's own tabs. Up to 300 KB.
@@ -475,8 +477,8 @@ The broker stamps the author from the handle each call names in `X-Chat-Handle`,
 daemon's key `CHAT_BROKER_KEY` (`Authorization: Bearer`), which the broker and the plugin share.
 It checks direct-message membership, gives each message a key that only grows within its
 conversation, slows each handle to 20 messages, then one per second, and 10 images, then one
-per 5 seconds, and refuses new images once the store holds 4 GiB. Everyone who picked themselves
-on the daemon is in the people list from the plugin's start, so others can message them before they
+per 5 seconds, and refuses new images once the store holds 4 GiB. Everyone in `CHAT_PEOPLE`
+is in the people list from the plugin's start, so others can message them before they
 open Paseo. A room @mention of a listed handle invites that person to the room, so the room
 reaches their inbox before they ever open it.
 

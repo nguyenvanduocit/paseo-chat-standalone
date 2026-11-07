@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import type { AgentToolContext, PluginServerContext } from "@getpaseo/plugin/server";
 import {
-  chatSettings, claimWorkspace, conversationTitle, handlePattern, joinDaemon, markChatRead, openChatTab, parseConversationId,
+  chatSettings, claimWorkspace, conversationTitle, markChatRead, openChatTab, parseConversationId,
   readChatInbox, readChatLatest, readDaemonPeople, readWorkspaceOwner, sendChatMessage,
 } from "./shared/chat";
 import { openRouter, openSelf, readAssistant, renewTab, routerLabel, selfLabel, workerLabel } from "./shared/assistant";
@@ -16,7 +16,7 @@ import { assistantRelay } from "./server/assistant";
 import { routerTools } from "./server/assistant-router";
 import { workerTools, working } from "./server/assistant-tabs";
 import { ChatBrokerError, openChatClient, resolveChatConfig, type ChatClient } from "./server/chat";
-import { daemonStore, noOwner, ownedAgent, ownerOf, withClaim, withPerson, type OwnedAgent } from "./server/daemon";
+import { daemonStore, noOwner, ownedAgent, ownerOf, peopleOf, withClaim, type OwnedAgent } from "./server/daemon";
 import { chatImageDir } from "./server/image-files";
 import { hostAgents, mentionCandidates, type HostAgent } from "./server/mentions";
 import { assistantAgentList, readAssistantAgents } from "./shared/assistant-agents";
@@ -24,6 +24,7 @@ import { chatProvider, chatProviderId, hostProjects, openChatTab as openTab } fr
 import { tasteStore, tastePaths } from "./server/taste";
 import { personaStore } from "./server/persona";
 import { selfTools } from "./server/self";
+import { attributeSessions, type AgentOwner } from "./server/session-owners";
 import { workerStore } from "./server/workers";
 import { replyWatcher } from "./server/replies";
 import { signalTools } from "./server/signal-tools";
@@ -31,13 +32,13 @@ import { changeSignal, readSignals } from "./shared/signals";
 import { maxMentionQueryLength, mentionAttachmentItem, readMentionCandidates, searchMentionAttachments } from "./shared/mentions";
 import { searchPriorityAttachments, urgentAttachmentItem } from "./shared/priority";
 
-// One daemon serves several people (docs/standalone.md): every client picks its person and names them in each call
-// (`as`), and each person has their own chat client, AI Assistant and files here.
+// One daemon serves several people (docs/standalone.md), the ones `CHAT_PEOPLE` lists: every client picks its person and
+// names them in each call (`as`), and each person has their own chat client, AI Assistant and files here.
 
 // Delivery waits on time as well as on events: a sender going quiet, a busy agent finishing its turn. The tick reads
 // the chat broker only for conversations its events marked; it also refreshes each person's count of working agents.
 const tickMs = 5_000;
-// Who uses this daemon and whose each workspace is (server/daemon.ts), and each person's files under `<handle>/`.
+// Whose each workspace is (server/daemon.ts), and each person's files under `<handle>/`.
 const chatRoot = join(homedir(), ".paseo", "chat");
 // A person's direct messages open in a workspace of this directory.
 const chatHomeOf = (handle: string) => join(homedir(), "Chat", handle);
@@ -45,14 +46,19 @@ const chatHomeOf = (handle: string) => join(homedir(), "Chat", handle);
 const assistantDirOf = (handle: string) => join(chatRoot, handle, "assistant");
 // The persona is a directory of its own, which is also the workspace the AI Assistant's tabs open in.
 const personaDirOf = (handle: string) => join(chatRoot, handle, "persona");
-// Where a SessionStart hook may name each Claude Code session's owner (server/work-history.ts); without one, the daily
-// improvement learns from chat alone.
+// Each person's Claude Code sessions, for the daily improvement (server/work-history.ts): the SessionStart hook records a
+// session's agent under `sessions-pending/`, and this plugin moves it under its owner (server/session-owners.ts).
 const sessionUsageDir = join(homedir(), ".paseo", "session-usage");
+const sessionsPendingDir = join(chatRoot, "sessions-pending");
 
 export default function contribute(server: PluginServerContext) {
   // The client reads these preferences (toasts, pop-ups), shared by everyone on this daemon.
   server.registerSettings(chatSettings);
   const daemon = daemonStore(join(chatRoot, "daemon.json"));
+  const everyone = peopleOf(process.env);
+  const listed = (handle: string) => {
+    if (!everyone.includes(handle)) throw new Error(`"${handle}" không có trong CHAT_PEOPLE của daemon này (${everyone.join(", ")}).`);
+  };
 
   // The plugin process has one Paseo client and hands it to every handler and hook, but not to this function,
   // so work on a timer, and a chat tab sending, use the one a handler or hook last brought.
@@ -78,7 +84,11 @@ export default function contribute(server: PluginServerContext) {
   type Person = ReturnType<typeof makePerson>;
   const people = new Map<string, Promise<Person>>();
   function personOf(handle: string): Promise<Person> {
-    if (!handlePattern.test(handle)) return Promise.reject(new Error(`"${handle}" không phải handle chat hợp lệ.`));
+    try {
+      listed(handle);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     let person = people.get(handle);
     if (!person) {
       person = (async () => {
@@ -97,16 +107,12 @@ export default function contribute(server: PluginServerContext) {
   }
   const chatOf = async (handle: string) => (await personOf(handle)).chat;
 
-  // A client picks its person once; from then on the daemon runs their AI Assistant and lists them for the next client.
-  server.handle(readDaemonPeople, async () => ({ people: (await daemon.read()).people }));
-  server.handle(joinDaemon, async ({ as }) => {
-    await personOf(as);
-    await daemon.change(state => withPerson(state, as));
-    return {};
-  });
+  server.handle(readDaemonPeople, async () => ({ people: [...everyone] }));
   server.handle(readWorkspaceOwner, async ({ workspaceId }) => ({ owner: (await daemon.read()).workspaces[workspaceId] ?? null }));
-  server.handle(claimWorkspace, async ({ as, workspaceId, claim }) =>
-    ({ owner: (await daemon.change(state => withClaim(state, workspaceId, as, claim))).workspaces[workspaceId] ?? null }));
+  server.handle(claimWorkspace, async ({ as, workspaceId, claim }) => {
+    listed(as);
+    return { owner: (await daemon.change(state => withClaim(state, workspaceId, as, claim))).workspaces[workspaceId] ?? null };
+  });
 
   // An agent acts for the person its labels name, else the owner of its workspace, else its parent's (server/daemon.ts).
   async function snapshotOf(paseo: PaseoApi, id: string): Promise<OwnedAgent | null> {
@@ -120,6 +126,10 @@ export default function contribute(server: PluginServerContext) {
     const owner = await ownerOf(self, workspaces, id => snapshotOf(paseo, id));
     if (!owner) throw new Error(noOwner);
     return chatOf(owner);
+  }
+  async function ownerOfAgent(paseo: PaseoApi, id: string): Promise<AgentOwner> {
+    const [self, { workspaces }] = await Promise.all([snapshotOf(paseo, id), daemon.read()]);
+    return self ? { found: true, owner: await ownerOf(self, workspaces, parent => snapshotOf(paseo, parent)) } : { found: false };
   }
   // The open agents of this daemon that act for `handle`.
   async function agentsOf(paseo: PaseoApi, handle: string): Promise<HostAgent[]> {
@@ -211,15 +221,14 @@ export default function contribute(server: PluginServerContext) {
   });
   // Paseo's composer asks without saying whose tab it is, so it offers everyone in chat and every agent of this daemon.
   server.handle(searchMentionAttachments, async ({ query }, { paseo }) => {
-    const [anyone] = (await daemon.read()).people;
-    const [people, agents] = await Promise.all([anyone ? (await chatOf(anyone)).people() : [], hostAgents(seen(paseo))]);
+    const [people, agents] = await Promise.all([chatOf(everyone[0]).then(chat => chat.people()), hostAgents(seen(paseo))]);
     return { items: mentionCandidates(people, null, agents, { query: query.slice(0, maxMentionQueryLength) }).map(mentionAttachmentItem) };
   });
   server.handle(searchPriorityAttachments, async () => ({ items: [urgentAttachmentItem] }));
 
   // A conversation is a Paseo agent tab: Paseo's own composer and timeline show it. A provider has no
   // Paseo client of its own; a tab's session opens through the hook below, which brings the plugin's client.
-  server.registerProvider(chatProvider(chatOf, async () => (await daemon.read()).people));
+  server.registerProvider(chatProvider(chatOf, everyone));
   server.handle(openChatTab, async ({ as, conversation }, { paseo }) => openTab(seen(paseo), await chatOf(as), conversation, chatHomeOf(as)));
 
   // Every interactive agent gets the chat tools, which act for its owner. The AI Assistant's workers also get the tools
@@ -234,7 +243,8 @@ export default function contribute(server: PluginServerContext) {
   });
   async function ownTools(paseo: PaseoApi, labels: Readonly<Record<string, string>>) {
     const owner = labels[routerLabel] ?? labels[workerLabel] ?? labels[selfLabel];
-    if (owner === undefined || !handlePattern.test(owner)) return [];
+    // A tab of someone no longer in CHAT_PEOPLE still opens, without their assistant's tools.
+    if (owner === undefined || !everyone.includes(owner)) return [];
     const person = await personOf(owner);
     const { relay } = person;
     if (labels[routerLabel] !== undefined) {
@@ -262,14 +272,26 @@ export default function contribute(server: PluginServerContext) {
         .catch(error => console.error(`[chat] Could not report working agents (${person.handle}).`, error)),
     ]);
   }
+  let attributing = false;
+  async function attributeOnce(paseo: PaseoApi) {
+    if (attributing) return;
+    attributing = true;
+    try {
+      await attributeSessions({ pendingDir: sessionsPendingDir, usageDir: sessionUsageDir, ownerOfAgent: id => ownerOfAgent(paseo, id), log: console.error });
+    } catch (error) {
+      console.error("[chat] Could not attribute Claude Code sessions.", error);
+    } finally {
+      attributing = false;
+    }
+  }
   const timer = setInterval(() => {
     for (const person of people.values()) void person.then(made => tickPerson(hostPaseo, made), () => {});
+    if (hostPaseo) void attributeOnce(hostPaseo);
   }, tickMs);
   timer.unref?.();
 
-  // Everyone who picked themselves here is in chat, and has their AI Assistant running, without opening a client.
-  void daemon.read().then(state => Promise.all(state.people.map(handle => personOf(handle).catch(error =>
-    console.error(`[chat] Could not start chat for ${handle}.`, error))))).catch(error => console.error("[chat] Could not read the daemon's people.", error));
+  // Everyone of this daemon is in chat, and has their AI Assistant running, without opening a client.
+  for (const handle of everyone) void personOf(handle).catch(error => console.error(`[chat] Could not start chat for ${handle}.`, error));
 
   return () => {
     clearInterval(timer);

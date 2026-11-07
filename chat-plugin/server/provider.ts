@@ -167,8 +167,8 @@ function serially(session: Session, work: () => Promise<void>) {
 
 // A chat conversation shown in a Paseo agent tab: Paseo's own composer and timeline, backed by the chat broker. A tab
 // reads new messages when the broker says its conversation has one, and catches up whenever the event stream
-// (re)connects. `openChat` is the client of one person of this daemon, `people` everyone who picked themselves here.
-export function chatProvider(openChat: (as: string) => Promise<ChatClient>, people: () => Promise<string[]>, { log = console.error }: {
+// (re)connects. `openChat` is the client of one person of this daemon, `people` everyone of this daemon (`CHAT_PEOPLE`).
+export function chatProvider(openChat: (as: string) => Promise<ChatClient>, people: readonly string[], { log = console.error }: {
   log?: (message: string, error: unknown) => void;
 } = {}): ProviderRegistration {
   return {
@@ -184,7 +184,7 @@ export function chatProvider(openChat: (as: string) => Promise<ChatClient>, peop
 
       // Paseo names a tab's model from this catalog, so it holds the conversations of everyone on this daemon.
       async function catalogModels() {
-        const lists = await Promise.all((await people()).map(async as => chatModels(await openChat(as))));
+        const lists = await Promise.all(people.map(async as => chatModels(await openChat(as))));
         return lists.flat().map((model, index) => ({ ...model, isDefault: index === 0 }));
       }
 
